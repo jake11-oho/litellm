@@ -51,6 +51,7 @@ from litellm.proxy.policy_engine.policy_registry import get_policy_registry
 from litellm.proxy.utils import hash_token
 from litellm.types.agents import AgentResponse
 from tests._master_key import MASTER_KEY
+from tests.unit.proxy.rust_auth_stores import install_rust_auth_stores
 
 _RUN: Final = "agent.v1.AgentService/RunSSE"
 _APPEND: Final = "aiserver.v1.BidiService/BidiAppend"
@@ -245,11 +246,10 @@ def test_effective_tag_token_caps_cannot_be_bypassed_by_opaque_requests(
 def test_opaque_tag_lookup_distinguishes_absent_tags_from_unverifiable_limits(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter, lookup: str
 ) -> None:
-    database: Final = MagicMock()
-    database.db.litellm_tagtable.find_many = AsyncMock(
-        return_value=[], side_effect=ConnectionError("tag database unavailable") if lookup == "error" else None
-    )
-    monkeypatch.setattr(proxy_server, "prisma_client", None if lookup == "no-database" else database)
+    stores: Final = install_rust_auth_stores(monkeypatch)
+    if lookup == "error":
+        stores.tag.seed("unregistered-tag", ConnectionError("tag database unavailable"))
+    monkeypatch.setattr(proxy_server, "prisma_client", None if lookup == "no-database" else MagicMock())
     upstream: Final = respx_mock.post(f"{_BASE}/{_RUN}").respond(content=b"\x08\x01")
     response: Final = client.post(
         f"/cursor-cli/{_RUN}", headers={**_HEADERS, "x-litellm-tags": "unregistered-tag"}, content=b"\xff"
@@ -362,7 +362,8 @@ def test_unenforceable_or_disallowed_key_policies_fail_closed(
 
 
 @pytest.mark.parametrize(
-    "budget_field", ["max_budget", "team_max_budget", "user_max_budget", "organization_max_budget", "end_user_max_budget"]
+    "budget_field",
+    ["max_budget", "team_max_budget", "user_max_budget", "organization_max_budget", "end_user_max_budget"],
 )
 @pytest.mark.parametrize("limit,spend", [(0, 0), (10, 0), (10, 11)])
 def test_spend_capped_keys_cannot_use_an_unmetered_cursor_relay(
