@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter
 
 from litellm._logging import verbose_logger
+from litellm.llms.a2a.common_utils import A2AError
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
     get_async_httpx_client,
@@ -213,6 +214,14 @@ class PydanticAITransformation:
         )
         response.raise_for_status()
         response_data = _STR_KEY_DICT_ADAPTER.validate_python(response.json())
+
+        error: Final = response_data.get("error")
+        if isinstance(error, Mapping):
+            message: Final = error.get("message")
+            raise A2AError(
+                status_code=500,
+                message=f"A2A error: {message if isinstance(message, str) else 'Unknown error'}",
+            )
 
         # Check if task is already completed
         result: Final = _STR_KEY_DICT_ADAPTER.validate_python(response_data.get("result", {}))

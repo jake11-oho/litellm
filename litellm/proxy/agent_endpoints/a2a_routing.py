@@ -5,7 +5,9 @@ Handles routing for A2A agents (models with "a2a/<agent-name>" prefix).
 Looks up agents in the registry and injects their API base URL.
 """
 
-from collections.abc import Mapping
+import uuid
+from collections.abc import AsyncIterator, Mapping
+from datetime import datetime
 from typing import Any, Final
 
 from fastapi import HTTPException
@@ -17,16 +19,34 @@ from litellm.a2a_protocol.litellm_completion_bridge.handler import (
     agent_completion_kwargs,
     bridge_model_name,
 )
+from litellm.a2a_protocol.providers.base import BaseA2AProviderConfig
+from litellm.a2a_protocol.providers.config_manager import A2AProviderConfigManager
 from litellm.constants import A2A_CHAT_COMPLETION_BRIDGE_PROVIDERS
-from litellm.litellm_core_utils.core_helpers import as_str_mapping
+from litellm.litellm_core_utils.core_helpers import as_str_mapping, single_log_line
+from litellm.llms.a2a.chat.transformation import _registry_api_key, _registry_headers
+from litellm.llms.a2a.common_utils import (
+    A2AError,
+    convert_messages_to_prompt,
+    extract_text_from_a2a_response,
+)
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.agent_endpoints.databricks_oauth import (
     resolve_databricks_backend_auth,
 )
 from litellm.proxy.agent_endpoints.utils import merge_agent_headers
 from litellm.types.agents import AgentResponse
+from litellm.types.llms.openai import AllMessageValues
+from litellm.types.utils import (
+    Choices,
+    Delta,
+    Message,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+)
 
 _HEADERS: Final = TypeAdapter(Mapping[str, str])
+_MESSAGES_ADAPTER: Final = TypeAdapter(tuple[AllMessageValues, ...])
 _OBJECT_MAPPING: Final = TypeAdapter(Mapping[str, object])
 _AGENT_PINNED_KWARGS: Final = ("api_base", "api_key")
 _AGENT_LAYERED_KWARGS: Final = ("custom_inputs", "extra_body")
@@ -180,10 +200,26 @@ async def route_a2a_agent_request(
         bridge_auth: Final = await resolve_databricks_backend_auth(litellm_params)
         return _call_route(route_type, _bridge_agent_request(data, agent, bridge_auth.litellm_params))
 
+    custom_llm_provider: Final = litellm_params.get("custom_llm_provider")
+    agent_type_model: Final = litellm_params.get("model")
+    a2a_provider_config: Final = A2AProviderConfigManager.get_provider_config(
+        custom_llm_provider=custom_llm_provider if isinstance(custom_llm_provider, str) else None,
+        model=agent_type_model if isinstance(agent_type_model, str) else None,
+    )
+    if a2a_provider_config is not None:
+        return _typed_a2a_agent_request(
+            data=data,
+            agent=agent,
+            litellm_params=litellm_params,
+            provider_config=a2a_provider_config,
+            agent_name=agent_name,
+            route_type=route_type,
+        )
+
     # Get API base URL from agent config
     card_params: Final = as_str_mapping(agent.agent_card_params)
     if not card_params or "url" not in card_params:
-        verbose_proxy_logger.error("[A2A] Agent '%s' has no URL configured", agent_name)
+        verbose_proxy_logger.error("[A2A] Agent '%s' has no URL configured", single_log_line(agent_name))
         route_name = ROUTE_ENDPOINT_MAPPING.get(route_type, route_type)
         raise ProxyModelNotFoundError(route=route_name, model_name=model_name, retryable_with_model_read_through=False)
 
@@ -207,3 +243,202 @@ def _bridge_agent_request(
 
 def _call_route(route_type: str, request_data: Mapping[str, object]) -> object:
     return getattr(litellm, route_type)(**request_data)
+
+
+def _a2a_message_params(messages: object) -> Mapping[str, object]:
+    message_values: Final = _MESSAGES_ADAPTER.validate_python(messages) if isinstance(messages, list) else ()
+    text: Final = convert_messages_to_prompt(list(message_values))
+    return {
+        "message": {
+            "kind": "message",
+            "role": "user",
+            "parts": [{"kind": "text", "text": text}],
+            "messageId": str(uuid.uuid4()),
+        }
+    }
+
+
+def _model_name(model: object) -> str | None:
+    return model if isinstance(model, str) else None
+
+
+def _raise_on_a2a_error_envelope(response_dict: Mapping[str, object]) -> None:
+    error: Final = response_dict.get("error")
+    if error is None:
+        return
+    message: Final = error.get("message") if isinstance(error, Mapping) else None
+    raise A2AError(status_code=500, message=f"A2A error: {message if isinstance(message, str) else 'Unknown error'}")
+
+
+def _a2a_result_to_model_response(response_dict: Mapping[str, object], model: object) -> ModelResponse:
+    _raise_on_a2a_error_envelope(response_dict)
+    model_response: Final = ModelResponse()
+    model_response.choices = [
+        Choices(
+            finish_reason="stop",
+            index=0,
+            message=Message(content=extract_text_from_a2a_response(response_dict), role="assistant"),
+        )
+    ]
+    model_response.model = _model_name(model)
+    response_id: Final = response_dict.get("id")
+    model_response.id = response_id if isinstance(response_id, str) else str(uuid.uuid4())
+    return model_response
+
+
+def _a2a_event_to_stream_chunk(event: Mapping[str, object], model: object) -> ModelResponseStream | None:
+    _raise_on_a2a_error_envelope(event)
+    text: Final = extract_text_from_a2a_response(event)
+    if not text:
+        return None
+    chunk: Final = ModelResponseStream()
+    chunk.choices = [StreamingChoices(index=0, delta=Delta(content=text, role="assistant"))]
+    chunk.model = _model_name(model)
+    return chunk
+
+
+async def _typed_a2a_agent_request(
+    data: Mapping[str, object],
+    agent: AgentResponse,
+    litellm_params: Mapping[str, object],
+    provider_config: BaseA2AProviderConfig,
+    agent_name: str,
+    route_type: str,
+) -> object:
+    """Run an agent whose registered agent type names an A2A provider (``pydantic_ai_agents``,
+    ``langflow``, ...) through that provider's own handler, the same machinery the
+    ``/a2a/{agent_id}`` pass-through uses, instead of the generic ``a2a`` chat provider."""
+    from litellm.proxy.route_llm_request import (
+        ROUTE_ENDPOINT_MAPPING,
+        ProxyModelNotFoundError,
+    )
+
+    card_params: Final = as_str_mapping(agent.agent_card_params) or {}
+    api_base: Final = card_params.get("url") or litellm_params.get("api_base")
+    if not isinstance(api_base, str) or not api_base:
+        verbose_proxy_logger.error("[A2A] Agent '%s' has no URL configured", single_log_line(agent_name))
+        route_name: Final = ROUTE_ENDPOINT_MAPPING.get(route_type, route_type)
+        raise ProxyModelNotFoundError(
+            route=route_name, model_name=f"a2a/{agent_name}", retryable_with_model_read_through=False
+        )
+
+    params: Final = _a2a_message_params(data.get("messages"))
+    request_id: Final = str(uuid.uuid4())
+    registered_api_key: Final = _registry_api_key(litellm_params)
+    auth_headers: Final = {
+        **(_registry_headers(litellm_params) or {}),
+        **({} if registered_api_key is None else {"Authorization": f"Bearer {registered_api_key}"}),
+    }
+    extra_headers: Final = merge_agent_headers(
+        dynamic_headers=_client_extra_headers(data, litellm_params),
+        static_headers=merge_agent_headers(
+            dynamic_headers=merge_agent_headers(
+                dynamic_headers=_agent_extra_headers(agent_completion_kwargs(litellm_params)),
+                static_headers=agent.static_headers,
+            ),
+            static_headers=auth_headers,
+        ),
+    )
+    verbose_proxy_logger.debug(
+        "[A2A] Routing a2a/%s to %s provider at %s",
+        single_log_line(agent_name),
+        litellm_params.get("custom_llm_provider"),
+        single_log_line(api_base),
+    )
+
+    logging_obj: Final = data.get("litellm_logging_obj")
+    start_time: Final = datetime.now()
+    # langflow's handler already goes through litellm.completion, which logs itself
+    logs_own_completion: Final = litellm_params.get("custom_llm_provider") == "langflow"
+
+    if data.get("stream") is True:
+        return _logged_typed_a2a_stream(
+            stream=_stream_typed_a2a_agent(
+                provider_config=provider_config,
+                request_id=request_id,
+                params=params,
+                api_base=api_base,
+                litellm_params=litellm_params,
+                agent_extra_headers=extra_headers,
+                model=data.get("model"),
+            ),
+            logging_obj=logging_obj if not logs_own_completion else None,
+            start_time=start_time,
+            model=data.get("model"),
+        )
+
+    response_dict: Final = await provider_config.handle_non_streaming(  # pyright: ignore[reportUnknownMemberType]  # base class exposes **kwargs
+        request_id=request_id,
+        params=dict(params),
+        api_base=api_base,
+        litellm_params=litellm_params,
+        agent_extra_headers=extra_headers,
+    )
+    model_response: Final = _a2a_result_to_model_response(response_dict, model=data.get("model"))
+    await _dispatch_success_logging(logging_obj if not logs_own_completion else None, model_response, start_time)
+    return model_response
+
+
+async def _dispatch_success_logging(logging_obj: object, result: ModelResponse, start_time: datetime) -> None:
+    if logging_obj is None or not hasattr(logging_obj, "async_success_handler"):
+        return
+    try:
+        await logging_obj.async_success_handler(  # pyright: ignore[reportAttributeAccessIssue]  # duck-typed LiteLLMLoggingObj
+            result=result,
+            start_time=start_time,
+            end_time=datetime.now(),
+        )
+    except Exception as e:
+        verbose_proxy_logger.warning("[A2A] Success logging for typed agent call failed (continuing): %s", e)
+
+
+async def _logged_typed_a2a_stream(
+    stream: AsyncIterator[ModelResponseStream],
+    logging_obj: object,
+    start_time: datetime,
+    model: object,
+) -> AsyncIterator[ModelResponseStream]:
+    delta_texts: Final = []
+    async for chunk in stream:
+        delta_texts.append(
+            chunk.choices[0].delta.content or ""
+        )  # mutable-ok: collects stream deltas for the end-of-stream success log
+        yield chunk
+    logged_response: Final = ModelResponse()
+    logged_response.choices = [
+        Choices(
+            finish_reason="stop",
+            index=0,
+            message=Message(content="".join(delta_texts), role="assistant"),
+        )
+    ]
+    logged_response.model = _model_name(model)
+    await _dispatch_success_logging(logging_obj, logged_response, start_time)
+
+
+async def _stream_typed_a2a_agent(
+    provider_config: BaseA2AProviderConfig,
+    request_id: str,
+    params: Mapping[str, object],
+    api_base: str,
+    litellm_params: Mapping[str, object],
+    agent_extra_headers: Mapping[str, str] | None,
+    model: object,
+) -> AsyncIterator[ModelResponseStream]:
+    async for event in provider_config.handle_streaming(  # pyright: ignore[reportUnknownMemberType]  # base class exposes **kwargs
+        request_id=request_id,
+        params=dict(params),
+        api_base=api_base,
+        litellm_params=litellm_params,
+        agent_extra_headers=agent_extra_headers,
+    ):
+        chunk = _a2a_event_to_stream_chunk(
+            event, model
+        )  # final-ok: Final is not allowed inside an async loop  # pyright: ignore[reportGeneralTypeIssues]  # stream chunk shape differs across event types
+        if chunk is not None:
+            yield chunk
+
+    final_chunk: Final = ModelResponseStream()
+    final_chunk.choices = [StreamingChoices(index=0, delta=Delta(), finish_reason="stop")]
+    final_chunk.model = _model_name(model)
+    yield final_chunk
