@@ -417,6 +417,55 @@ async fn a_failed_deployment_is_retried_on_another_deployment_of_its_group() {
     );
 }
 
+#[rstest]
+#[tokio::test]
+async fn a_call_through_an_alias_reports_the_alias_as_its_model_group() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(served_message())
+        .mount(&upstream)
+        .await;
+    let config = format!(
+        "model_list:\n{}router_settings:\n  model_group_alias:\n    alias: primary\ngeneral_settings:\n  master_key: gateway-key\n",
+        deployment("primary", "primary-1", &upstream),
+    );
+
+    let response = routed(&config, "alias").await;
+
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        routing_headers(&response)[..2],
+        [
+            ("x-litellm-model-id", "primary-1"),
+            ("x-litellm-model-group", "alias"),
+        ]
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_call_that_ends_on_a_failed_attempt_names_its_deployment() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"error": {"message": "refused"}})),
+        )
+        .mount(&upstream)
+        .await;
+    let config = format!(
+        "model_list:\n{}general_settings:\n  master_key: gateway-key\n",
+        deployment("primary", "primary-1", &upstream),
+    );
+
+    let response = routed(&config, "primary").await;
+
+    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(
+        routing_headers(&response),
+        [("x-litellm-model-id", "primary-1")]
+    );
+}
+
 /// A port nothing listens on, so a call to it never gets an answer.
 async fn closed_port() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

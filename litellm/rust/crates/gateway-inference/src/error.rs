@@ -1,12 +1,14 @@
 use axum::http::StatusCode;
 use axum::{
-    Json,
+    Extension, Json,
     response::{IntoResponse, Response},
 };
 use litellm_inference::Error as InferenceError;
 use litellm_llms::base_llm::ocr::error::Error as OcrError;
 use litellm_python_compat::{Value as PyValue, repr::repr};
 use serde_json::{Map, Value, json};
+
+use crate::headers::Routing;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -34,6 +36,13 @@ pub enum Error {
     BodyTooLarge,
     #[error("unexpected HTTP host operation")]
     Internal,
+    /// The failure a call ended on, with the deployment its last attempt ran on, which the proxy
+    /// names in `x-litellm-model-id`.
+    #[error("{error}")]
+    OnDeployment {
+        deployment_id: String,
+        error: Box<Error>,
+    },
 }
 
 /// Python's `RouterRateLimitError`, in its words: no deployment of `model` takes a call now.
@@ -124,11 +133,23 @@ impl Error {
             Self::Ocr(error) => ocr_status(error),
             Self::Route(error) => route_status(error),
             Self::Routing(error) => routing_status(error),
+            Self::OnDeployment { error, .. } => error.status(),
+        }
+    }
+
+    /// What the router did for the call this error ended, which the routing headers layer
+    /// reads off the response.
+    pub(crate) fn routing(&self) -> Option<Extension<Routing>> {
+        match self {
+            Self::OnDeployment { deployment_id, .. } => {
+                Some(Extension(Routing::failed_on(deployment_id)))
+            }
+            _ => None,
         }
     }
 
     pub fn openai_response(self) -> Response {
-        (self.status(), Json(self.openai_body())).into_response()
+        (self.status(), self.routing(), Json(self.openai_body())).into_response()
     }
 
     /// The OpenAI envelope as an `event: error` frame, for a stream that fails after its
@@ -156,6 +177,9 @@ impl Error {
     /// The Anthropic error envelope Python's `AnthropicExceptionMapping` builds: an upstream
     /// body already in that shape passes through, any other has its message extracted.
     pub fn body(&self, request_id: Option<&str>) -> Value {
+        if let Self::OnDeployment { error, .. } = self {
+            return error.body(request_id);
+        }
         let raw = match self {
             Self::Route(error) if let Some((_, body)) = error.upstream_response() => {
                 body.to_owned()
@@ -181,6 +205,7 @@ impl Error {
     fn message(&self) -> String {
         match self {
             Self::Auth(error) => error.to_string(),
+            Self::OnDeployment { error, .. } => error.message(),
             Self::InvalidBody(_)
             | Self::InvalidPath(_)
             | Self::UnknownModel { .. }

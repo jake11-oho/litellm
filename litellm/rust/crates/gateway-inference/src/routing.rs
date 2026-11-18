@@ -13,6 +13,7 @@ use litellm_router_core::{
     RouterRequest, RouterResponse, Served, resolve,
 };
 use litellm_router_types::Spelled;
+use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
 use crate::{Error, Gateway, error::NoDeployments};
@@ -162,8 +163,35 @@ fn caller_request(identity: &AuthenticatedRequest, model: &str) -> RouterRequest
     }
 }
 
+/// What the proxy reports of the attempt a call ended on.
+struct LastAttempt {
+    /// The name the attempt served: the requested name, an alias included, or a fallback target.
+    name: String,
+    deployment_id: String,
+}
+
+/// `route`, remembering the attempt the router ran last.
+struct Remembering<'a, A> {
+    route: &'a A,
+    last: Mutex<Option<LastAttempt>>,
+}
+
+impl<A: RouteAttempt> RouteAttempt for Remembering<'_, A> {
+    type Outcome = A::Outcome;
+
+    async fn run(&self, attempt: &Attempt) -> Result<Served<A::Outcome>, Error> {
+        *self.last.lock() = Some(LastAttempt {
+            name: attempt.name.clone(),
+            deployment_id: attempt.deployment.id.clone(),
+        });
+        self.route.run(attempt).await
+    }
+}
+
 /// Authorize `model`, then serve it through the router: pick, run `route` on each attempt,
-/// retry and fall back.
+/// retry and fall back. The response names the group the way the proxy's `x-litellm-model-group`
+/// does, by the name its attempt served, so an alias is reported as the client wrote it. A call
+/// that ends on a failed attempt names that attempt's deployment.
 pub(crate) async fn call<H: Host, A: RouteAttempt>(
     gateway: &Gateway<H>,
     identity: &AuthenticatedRequest,
@@ -178,16 +206,35 @@ pub(crate) async fn call<H: Host, A: RouteAttempt>(
         model: model.to_owned(),
     })?;
     authorize(identity, model, first).await?;
-    let host = gateway.host.router_host(gateway, identity, route);
+    let route = Remembering {
+        route,
+        last: Mutex::new(None),
+    };
+    let host = gateway.host.router_host(gateway, identity, &route);
     let ended = match gateway.router.call(&host, op, request).await {
-        Ok(routed) => return Ok(routed),
+        Ok(routed) => {
+            let model_group = match route.last.lock().take() {
+                Some(last) => last.name,
+                None => routed.model_group,
+            };
+            return Ok(RouterResponse {
+                model_group,
+                ..routed
+            });
+        }
         Err(ended) => ended,
     };
     Err(match ended {
         CallError {
             raised: Some(error),
             ..
-        } => error,
+        } => match route.last.lock().take() {
+            Some(last) => Error::OnDeployment {
+                deployment_id: last.deployment_id,
+                error: Box::new(error),
+            },
+            None => error,
+        },
         CallError {
             error: litellm_router_core::Error::UnknownModel { model },
             ..
