@@ -20804,6 +20804,12 @@
     "loadFailed": "Could not load this model group's deployments. Saved weights are kept."
   },
   "customerPortal": {
+    "organizationGroups": {
+      "title": "Organization budget groups",
+      "help": "Create reusable budgets, then assign them to customer organizations.",
+      "placeholder": "Select a group or enter a dollar amount",
+      "custom": "Use this custom monthly budget"
+    },
     "budgetGroups": {
       "atCap": "At the cap",
       "atCapLabel": "Group {{index}} at the cap",
