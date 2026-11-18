@@ -265,6 +265,66 @@ async def test_shutdown_commits_spend_a_logging_task_queued_while_the_first_comm
     assert committed == ["failure row spend"]
 
 
+@pytest.mark.asyncio
+async def test_shutdown_flushes_rust_callbacks_after_the_logging_drain_and_before_the_last_spend_flush() -> None:
+    from litellm.responses.streaming_iterator import spawn_logging_task
+
+    rust_queue: Final[list[str]] = []
+    journal: Final[list[str]] = []
+
+    async def flush_spend() -> None:
+        journal.append("spend")
+
+    async def flush_rust() -> None:
+        journal.append(f"rust {','.join(rust_queue)}")
+        rust_queue.clear()
+
+    async def rust_row() -> None:
+        await asyncio.sleep(0.01)
+        rust_queue.append("row")
+
+    spawn_logging_task(asyncio.get_running_loop(), rust_row(), task_name="rust row")
+
+    await litellm.proxy.proxy_server._flush_spend_around_logging_drain_on_shutdown(  # pyright: ignore[reportPrivateUsage]  # the shutdown sequence under test
+        flush_spend=flush_spend, flush_rust=flush_rust
+    )
+
+    assert journal == ["spend", "rust row", "spend"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_flushes_each_rust_callback_in_the_callback_lists_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from litellm.integrations.custom_logger_v2.rust import RustLogger
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.flushes = 0
+
+        def manifest(self) -> str:
+            return "{}"
+
+        def request_state(self) -> object:
+            return None
+
+        async def handle(self, *_: object) -> object:
+            return None
+
+        async def flush(self) -> None:
+            self.flushes += 1
+
+    handle: Final = _Handle()
+    rust_callback: Final = RustLogger(handle)
+    monkeypatch.setattr(litellm, "callbacks", [rust_callback, "langfuse"])
+    monkeypatch.setattr(litellm, "_async_success_callback", [rust_callback])
+    monkeypatch.setattr(litellm, "_async_failure_callback", [rust_callback])
+
+    await litellm.proxy.proxy_server.flush_rust_callbacks_on_shutdown()
+
+    assert handle.flushes == 1
+
+
 token = MASTER_KEY
 
 

@@ -1435,9 +1435,16 @@ async def _flush_spend_on_shutdown() -> None:
     await _flush_spend_logs_queue_on_shutdown()
 
 
+async def flush_rust_callbacks_on_shutdown() -> None:
+    from litellm.integrations.custom_logger_v2.rust import flush_rust_loggers
+
+    await flush_rust_loggers(litellm.logging_callback_manager.get_all_callbacks())
+
+
 async def _flush_spend_around_logging_drain_on_shutdown(
     flush_spend: Callable[[], Awaitable[None]] = _flush_spend_on_shutdown,
     *,
+    flush_rust: Callable[[], Awaitable[None]] = flush_rust_callbacks_on_shutdown,
     worker: LoggingWorker = GLOBAL_LOGGING_WORKER,
     clock: Callable[[], float] = time.monotonic,
     drain_tasks: Callable[[float], Awaitable[None]] = drain_logging_tasks,
@@ -1465,6 +1472,7 @@ async def _flush_spend_around_logging_drain_on_shutdown(
     finally:
         await worker.stop(discard_pending=True, timeout=GracefulShutdownManager.remaining(2.0, clock=clock))
     await drain_tasks(GracefulShutdownManager.remaining(5.0, clock=clock))
+    await flush_rust()
     await flush_spend()
 
 
