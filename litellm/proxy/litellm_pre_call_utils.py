@@ -3089,10 +3089,10 @@ async def add_litellm_data_to_request(
     data["proxy_server_request"]["caller_credential_fields"] = caller_fields  # rebind-ok: data is an out-param
 
     ## Cache Controls
-    cache_control_header: Final = _headers.get("Cache-Control", None)
-    if cache_control_header:
-        cache_dict: Final = parse_cache_control(cache_control_header)
-        data["ttl"] = cache_dict.get("s-maxage")
+    cache_control_header: Final = _headers.get("cache-control")
+    header_s_maxage: Final = parse_cache_control(cache_control_header).get("s-maxage") if cache_control_header else None
+    if header_s_maxage is not None:
+        data["ttl"] = header_s_maxage
 
     # requester_metadata is snapshotted AFTER the strip below so
     # downstream consumers (e.g. PANW guardrail reading user_ip /
