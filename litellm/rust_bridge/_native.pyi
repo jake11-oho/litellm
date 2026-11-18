@@ -1902,6 +1902,15 @@ class NativeTokenRedactor:
     def redact(self, text: str, replacement: str) -> str | None: ...
 
 @final
+class RustSpendLogRowBuilder:
+    def __new__(
+        cls, settings_json: str, minimum_custom_key_length: int, word_ranges: Sequence[tuple[int, int]]
+    ) -> RustSpendLogRowBuilder: ...
+    def build_row(self, input_json: str) -> str: ...
+    @staticmethod
+    def finalize_ledger_row(row_json: str, input_json: str) -> str: ...
+
+@final
 class NativeDiagnosticProcessor:
     def __new__(cls, minimum_custom_key_length: int) -> NativeDiagnosticProcessor: ...
     def redact_text(self, text: str) -> str: ...
@@ -2196,6 +2205,7 @@ __all__ = [
     "RustMappedClaims",
     "RustModelAccessGroupRepository",
     "RustPlan",
+    "RustSpendLogRowBuilder",
     "RustTeamGrant",
     "RustUpstreamError",
     "SpendRead",
