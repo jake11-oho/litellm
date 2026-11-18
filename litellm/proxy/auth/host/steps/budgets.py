@@ -50,7 +50,7 @@ from litellm.proxy.auth.user_api_key_auth import (
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache, team_membership_auth_cache_key
 from litellm.proxy.spend_tracking.native_budgets import native_budget_decision
 from litellm.redis.stores.spend_counters import team_member_counter
-from litellm.repositories.table_repositories import TeamMembershipRepository
+from litellm.repositories.team_membership_repository import TeamMembershipRepository
 from litellm.types.integrations.slack_alerting import CallInfo, Litellm_EntityType
 from litellm.types.proxy.auth.user_api_key_auth import UserAPIKeyAuth
 
@@ -110,13 +110,9 @@ class BudgetChecks:
         cached: Final = await self.user_api_key_cache.async_get_cache(key=cache_key, model_type=LiteLLM_TeamMembership)
         if cached is not None:
             return cached
-        db_member: Final = await TeamMembershipRepository(prisma_client).table.find_first(
-            where={"user_id": user_id, "team_id": team_id},
-            include={"litellm_budget_table": True},
-        )
-        if db_member is None:
+        membership: Final = await TeamMembershipRepository(prisma_client).find_for_auth(user_id, team_id)
+        if membership is None:
             return None
-        membership: Final = LiteLLM_TeamMembership.model_validate(db_member.model_dump())
         await self.user_api_key_cache.async_set_cache(
             key=cache_key, value=membership, model_type=LiteLLM_TeamMembership, ttl=5
         )

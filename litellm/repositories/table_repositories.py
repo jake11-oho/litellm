@@ -260,10 +260,6 @@ class ClaudeCodePluginRepository(PrismaTableRepository["prisma_models.LiteLLM_Cl
     table_name = "litellm_claudecodeplugintable"
 
 
-class TeamMembershipRepository(PrismaTableRepository["prisma_models.LiteLLM_TeamMembership"]):
-    table_name = "litellm_teammembership"
-
-
 _END_USER_ID_ROWS: Final = TypeAdapter(list[dict[str, str]])
 _END_USER_QUERY: Final = TypeAdapter(str)
 
