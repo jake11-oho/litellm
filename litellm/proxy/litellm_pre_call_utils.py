@@ -915,6 +915,16 @@ def _strip_client_message_redaction_opt_out(data: dict[str, object]) -> None:
         )
 
 
+def strip_unapproved_client_message_redaction_opt_out(
+    data: dict[str, object],  # mutable-ok: strips in place on the request body the caller is about to dispatch
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    if litellm.turn_off_message_logging is True and not _key_or_team_allows_client_message_redaction_opt_out(
+        user_api_key_dict
+    ):
+        _strip_client_message_redaction_opt_out(data)
+
+
 def _strip_client_callback_credentials(
     data: dict[str, object],  # mutable-ok: strips in place on the request body the pre-call pipeline threads through
 ) -> None:
@@ -3146,8 +3156,7 @@ async def add_litellm_data_to_request(
     # so JSON-string metadata cannot smuggle callback credentials past the dict guard.
     _strip_client_callback_credentials(data)
 
-    if not _allow_client_message_redaction_opt_out and litellm.turn_off_message_logging is True:
-        _strip_client_message_redaction_opt_out(data)
+    strip_unapproved_client_message_redaction_opt_out(data, user_api_key_dict)
 
     # Fill in the proxy_server_request body snapshot now that metadata has
     # been parsed. Consumers (standard_logging_payload, lago,
