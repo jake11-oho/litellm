@@ -22,6 +22,7 @@
 //! Python by `scripts/record_goldens.py`.
 
 mod accounting;
+pub mod callback;
 mod compaction;
 mod input;
 mod privacy;
@@ -39,6 +40,7 @@ use litellm_tracing::TokenRedactor;
 use crate::py::get_or_none;
 
 pub use accounting::{build_accounting_payload, finalize_ledger_row};
+pub use callback::{SpendLogCallback, SpendLogParts};
 pub use input::INPUT_VERSION;
 
 const DEFAULT_MAX_STRING_LENGTH_PROMPT_IN_DB: i64 = 2048;

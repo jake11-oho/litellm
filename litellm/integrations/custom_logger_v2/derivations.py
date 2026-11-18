@@ -837,6 +837,18 @@ def input_sequence_length(args: HookArgs) -> InputSequenceLength | None:
     return InputSequenceLength(bucket=bucket)
 
 
+def spend_log_success_input(args: HookArgs) -> Mapping[str, object] | None:
+    from litellm.proxy.spend_tracking.rust_spend_log_inputs import spend_log_success_input as success_input
+
+    return success_input(args)
+
+
+def spend_log_failure_input(args: HookArgs) -> Mapping[str, object] | None:
+    from litellm.proxy.spend_tracking.rust_spend_log_inputs import spend_log_failure_input as failure_input
+
+    return failure_input(args)
+
+
 def payload_copy(
     args: HookArgs,
 ) -> dict[str, object] | None:  # mutable-ok: the shallow copy handed to Rust by reference
@@ -900,6 +912,7 @@ DERIVED_ATTEMPT_FIELDS: Final[Mapping[Field, FieldSource]] = MappingProxyType(
         Field.standard_logging_payload_ref: derived(payload_copy),
         Field.input_sequence_length: derived(input_sequence_length),
         Field.budget_reservation: derived(logged_budget_reservation),
+        Field.spend_log_input: derived(spend_log_success_input),
     }
 )
 DERIVED_AUTH_FIELDS: Final[Mapping[Field, FieldSource]] = MappingProxyType({Field.key_identity: derived(key_identity)})
@@ -911,6 +924,7 @@ DERIVED_POST_CALL_FAILURE_FIELDS: Final[Mapping[Field, FieldSource]] = MappingPr
         Field.spend_log_id: derived(failure_spend_log_id),
         Field.billed_retry_attempts: derived(billed_retry_attempts),
         Field.budget_reservation: derived(budget_reservation),
+        Field.spend_log_input: derived(spend_log_failure_input),
     }
 )
 PRE_CALL_AUTH_SOURCES: Final[Mapping[Field, FieldSource]] = MappingProxyType(

@@ -11,11 +11,12 @@ queries next to ported ones. These invariants hold until Prisma is gone:
   connection and auth reads keys through the Rust pool on a cache miss, so the Rust pool needs one too. The
   CLI refuses to start on any other limit rather than leave auth without a pool or open more than the limit.
 - The Rust share is the hard-coded `RUST_RESERVED_CONNECTIONS`, cut down to what is left after Prisma's one.
-  The writer and the reader are split separately, so each Rust pool takes its own pool's share.
+  The writer and the reader are split separately, so each Rust pool takes its own pool's share. When the
+  spend logs ledger is on, the writer's reserve grows by `SPEND_LOG_WRITER_RESERVED_CONNECTIONS` for the
+  Rust spend log writer, which writes only on the writer. The reader's reserve stays the base.
 - The split is Python's. It is about Prisma and Prisma lives only in the Python gateway, so this module is
   deleted with Prisma. The CLI hands the worker each Rust share through `RUST_WRITER_CONNECTIONS_ENV_VAR` and
-  `RUST_READER_CONNECTIONS_ENV_VAR`, and a worker started without them reserves the full
-  `RUST_RESERVED_CONNECTIONS` for each.
+  `RUST_READER_CONNECTIONS_ENV_VAR`, and a worker started without them reserves each pool's full reserve.
 - The Rust core takes a plain `max_connections` per pool and never learns about the split. That is already
   its final interface, since the Rust gateway will pass `database_connection_pool_limit` straight to SQLx.
 """
@@ -26,6 +27,7 @@ from types import MappingProxyType
 from typing import Final
 
 RUST_RESERVED_CONNECTIONS: Final = 2
+SPEND_LOG_WRITER_RESERVED_CONNECTIONS: Final = 2
 MIN_CONNECTION_LIMIT: Final = 2
 RUST_WRITER_CONNECTIONS_ENV_VAR: Final = "LITELLM_RUST_WRITER_DATABASE_CONNECTIONS"
 RUST_READER_CONNECTIONS_ENV_VAR: Final = "LITELLM_RUST_READER_DATABASE_CONNECTIONS"
@@ -39,6 +41,11 @@ class UnsplittableConnectionLimit(ValueError):
             f"{pool} connection_limit {connection_limit!r} must be a whole number of at least {MIN_CONNECTION_LIMIT}, "
             "one connection for Prisma and at least one for the Rust pool that reads keys for auth"
         )
+
+
+def rust_writer_reserve(spend_logs_ledger: bool) -> int:
+    """The writer pool's Rust reserve: the auth reads' share, plus the spend log writer's when the ledger is on."""
+    return RUST_RESERVED_CONNECTIONS + (SPEND_LOG_WRITER_RESERVED_CONNECTIONS if spend_logs_ledger else 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,16 +81,17 @@ class RustConnections:
     reader: int
 
 
-def rust_connections(environ: Mapping[str, str]) -> RustConnections:
+def rust_connections(environ: Mapping[str, str], *, spend_logs_ledger: bool) -> RustConnections:
     """The Rust pool sizes the CLI's split left this worker, or the full reserve for each the CLI set none for."""
     return RustConnections(
-        writer=_share(environ, RUST_WRITER_CONNECTIONS_ENV_VAR), reader=_share(environ, RUST_READER_CONNECTIONS_ENV_VAR)
+        writer=_share(environ, RUST_WRITER_CONNECTIONS_ENV_VAR, rust_writer_reserve(spend_logs_ledger)),
+        reader=_share(environ, RUST_READER_CONNECTIONS_ENV_VAR, RUST_RESERVED_CONNECTIONS),
     )
 
 
-def _share(environ: Mapping[str, str], name: str) -> int:
+def _share(environ: Mapping[str, str], name: str, reserve: int) -> int:
     share: Final = environ.get(name, "")
-    return int(share) if share.isascii() and share.isdigit() else RUST_RESERVED_CONNECTIONS
+    return int(share) if share.isascii() and share.isdigit() else reserve
 
 
 def _whole_number(connection_limit: str | float) -> int | None:

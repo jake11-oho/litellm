@@ -58,6 +58,12 @@ fn decoded(rows: &[String]) -> (Vec<SpendLogRow>, Vec<usize>) {
     (kept, refused)
 }
 
+impl RustSpendLogWriter {
+    pub(crate) fn writer(&self) -> Arc<SpendLogWriter<PgLedgerStore>> {
+        Arc::clone(&self.writer)
+    }
+}
+
 #[pymethods]
 impl RustSpendLogWriter {
     #[new]

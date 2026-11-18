@@ -3848,14 +3848,26 @@ name = "litellm-callbacks-spend-log"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "fancy-regex 0.19.2",
+ "futures-util",
+ "litellm-callbacks",
+ "litellm-callbacks-budgets",
+ "litellm-coroutine",
  "litellm-python-compat",
+ "litellm-redis-store",
+ "litellm-spend-log-writer",
  "litellm-tracing",
  "num-traits",
  "regex",
  "rstest",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -27,7 +27,9 @@ pub use flusher::{
 };
 pub use queue::{Enqueued, SpendLogQueue};
 pub use row::{RowError, SpendLogRow};
-pub use statement::{InvalidMetadata, LedgerRequest, Retention, ledger_request};
+pub use statement::{
+    InvalidMetadata, LedgerRequest, Retention, jsonified, ledger_request, retain_metadata,
+};
 pub use store::PgLedgerStore;
 
 /// The writer's limits and timings. The defaults are the Python proxy's constants;

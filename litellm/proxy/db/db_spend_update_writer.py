@@ -97,6 +97,7 @@ from litellm.proxy.spend_tracking.savings import (
 )
 from litellm.proxy.spend_tracking.session_spend_total import SessionSpendTotals
 from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
+from litellm.proxy.spend_tracking.spend_logs_ledger_setting import spend_logs_ledger_enabled
 from litellm.repositories.prisma_protocols import BatchTable
 from litellm.responses.streaming_iterator import spawn_logging_task
 from litellm.types.proxy.auth.customer_hierarchy import (
@@ -818,7 +819,7 @@ class DBSpendUpdateWriter:
         proxy_settings: Final = cast(  # cast-ok: proxy settings use string keys
             Mapping[str, object], general_settings
         )
-        use_ledger: Final = proxy_settings.get("use_spend_logs_ledger", True) is not False
+        use_ledger: Final = spend_logs_ledger_enabled(proxy_settings)
         request_fields: Final = _SPEND_METADATA_ADAPTER.validate_python(kwargs or {})
         customer_hierarchy: Final = customer_hierarchy_ids_from_request(request_fields)
         if kwargs is not None:

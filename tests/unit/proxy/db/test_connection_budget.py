@@ -7,10 +7,12 @@ from litellm.proxy.db.connection_budget import (
     RUST_READER_CONNECTIONS_ENV_VAR,
     RUST_RESERVED_CONNECTIONS,
     RUST_WRITER_CONNECTIONS_ENV_VAR,
+    SPEND_LOG_WRITER_RESERVED_CONNECTIONS,
     ConnectionBudget,
     RustConnections,
     UnsplittableConnectionLimit,
     rust_connections,
+    rust_writer_reserve,
 )
 
 
@@ -52,6 +54,26 @@ def test_a_limit_that_leaves_no_room_for_both_pools_is_refused(connection_limit:
     )
 
 
+def test_the_ledger_reserves_two_more_writer_connections_than_the_base() -> None:
+    assert SPEND_LOG_WRITER_RESERVED_CONNECTIONS == 2
+    assert rust_writer_reserve(True) == RUST_RESERVED_CONNECTIONS + 2
+
+
+def test_without_the_ledger_the_base_writer_reserve_stands() -> None:
+    assert rust_writer_reserve(False) == RUST_RESERVED_CONNECTIONS
+
+
+@pytest.mark.parametrize(
+    ("total", "python", "rust"),
+    [(2, 1, 1), (4, 1, 3), (5, 1, 4), (10, 6, 4)],
+    ids=["two_connections", "four_connections", "five_connections", "ten_connections"],
+)
+def test_the_ledger_writer_reserve_is_carved_out_of_the_limit(total: int, python: int, rust: int) -> None:
+    budget: Final = ConnectionBudget.of("DATABASE_URL", total, rust_writer_reserve(True))
+
+    assert (budget.python, budget.rust) == (python, rust)
+
+
 def test_prisma_params_carry_prisma_share() -> None:
     params: Final = {"connection_limit": "010", "pool_timeout": 30}
 
@@ -72,4 +94,18 @@ def test_prisma_params_carry_prisma_share() -> None:
     ids=["cli_split_both", "cli_split_writer_only", "started_without_cli", "not_a_number"],
 )
 def test_a_worker_sizes_each_rust_pool_from_the_cli_split(environ: dict[str, str], expected: RustConnections) -> None:
-    assert rust_connections(environ) == expected
+    assert rust_connections(environ, spend_logs_ledger=False) == expected
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({RUST_WRITER_CONNECTIONS_ENV_VAR: "3", RUST_READER_CONNECTIONS_ENV_VAR: "1"}, RustConnections(3, 1)),
+        ({}, RustConnections(RUST_RESERVED_CONNECTIONS + 2, RUST_RESERVED_CONNECTIONS)),
+    ],
+    ids=["cli_split_both", "started_without_cli"],
+)
+def test_with_the_ledger_a_worker_without_the_cli_split_reserves_the_writer_extra(
+    environ: dict[str, str], expected: RustConnections
+) -> None:
+    assert rust_connections(environ, spend_logs_ledger=True) == expected
