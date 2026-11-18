@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import threading
 import types
 import weakref
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
@@ -24,6 +25,7 @@ import fastapi.routing
 import httpx
 import pytest
 import yaml
+from fakeredis import TcpFakeServer
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
@@ -13519,6 +13521,34 @@ def test_init_cache_redis_backend_reuses_cache_backend_over_environment():
     assert usage_cache is redis_backend
     assert usage_cache.init_kwargs["host"] == "cache-params-host"
     assert spend_redis is redis_backend
+
+
+def test_init_cache_accepts_default_redis_ttl_for_a_redis_response_cache(monkeypatch):
+    server: Final = TcpFakeServer(("127.0.0.1", 0), server_type="redis")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(litellm, "cache", None)
+    monkeypatch.setattr(litellm, "default_redis_ttl", None)
+    try:
+        with (
+            _patched_coordination_redis_module_state(
+                spend_cache=DualCache(), config_cache=types.SimpleNamespace(redis_cache=None)
+            ),
+            patch("litellm._redis._redis_kwargs_from_environment", return_value={}),
+        ):
+            proxy_server_module.ProxyConfig()._init_cache(
+                cache_params={
+                    "type": "redis",
+                    "host": "127.0.0.1",
+                    "port": str(server.server_address[1]),
+                    "default_redis_ttl": 600,
+                }
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert litellm.cache is not None
+    assert litellm.cache.cache.default_ttl == 600
 
 
 class _EnvBuiltClusterCache(RedisClusterCache):

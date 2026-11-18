@@ -6817,7 +6817,7 @@ class ProxyConfig:
 
     def init_cache(
         self,
-        cache_params: dict,
+        cache_params: Mapping[str, Any],
         enable_redis_auth_cache: bool = False,
     ) -> RedisCache | None:
         """
@@ -6835,7 +6835,7 @@ class ProxyConfig:
         if "default_redis_ttl" in cache_params:
             litellm.default_redis_ttl = cache_params["default_redis_ttl"]
 
-        litellm.cache = Cache(**cache_params)
+        litellm.cache = Cache(**{name: value for name, value in cache_params.items() if name != "default_redis_ttl"})
 
         resolved_usage_cache = redis_usage_cache
         cache_backend: Final = litellm.cache.cache if litellm.cache is not None else None
