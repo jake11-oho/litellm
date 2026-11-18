@@ -1,0 +1,25 @@
+[package]
+name = "litellm-spend-log-writer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+litellm-db.workspace = true
+litellm-python-compat.workspace = true
+litellm-repositories.workspace = true
+
+chrono.workspace = true
+
+thiserror.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+sqlx.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+litellm-secret-value.workspace = true
+url.workspace = true

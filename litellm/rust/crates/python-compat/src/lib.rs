@@ -21,6 +21,7 @@
 //! | [`datetime`] | `datetime.fromtimestamp(seconds, timezone.utc)` fields and `datetime.fromisoformat(text)` |
 //! | [`flags`] | LiteLLM's own text-to-bool helpers, such as `str_to_bool` and `_redis._str_to_bool` |
 //! | [`lenient`] | how Python reads an unvalidated config value: `value is True`, or a value of the expected shape |
+//! | [`safe_json`] | LiteLLM's `safe_dumps(value, non_finite_as_null=True)` and `PrismaClient.jsonify_object(row)` |
 //!
 //! [`Value`] is the closed data model these formats share. Live Python objects
 //! (descriptors, `__bool__`, `__str__`, callbacks) are out of scope: those belong to the
@@ -47,6 +48,7 @@ pub mod pydantic;
 pub mod pystr;
 pub mod repr;
 pub mod reprlib;
+pub mod safe_json;
 pub mod truthy;
 pub mod unicode;
 pub mod urllib;

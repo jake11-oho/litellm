@@ -4,6 +4,13 @@ pub enum Error {
     Query(#[from] sqlx::Error),
     #[error("invalid pool duration")]
     InvalidDuration(#[from] std::time::TryFromFloatSecsError),
+    /// A transaction did not commit within the deadline its caller gave it, so it was rolled back.
+    #[error("transaction timed out")]
+    TransactionTimedOut,
+    /// The pool timed out while it still had room for a connection, so the server
+    /// refused or never answered the connect: an outage, not a full pool.
+    #[error("database unreachable: no connection could be opened before the pool timeout")]
+    PoolUnreachable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
@@ -23,7 +30,7 @@ pub enum ErrorKind {
 impl Error {
     pub fn kind(&self) -> ErrorKind {
         match self {
-            Self::Query(sqlx::Error::Io(_)) => ErrorKind::Unreachable,
+            Self::Query(sqlx::Error::Io(_)) | Self::PoolUnreachable => ErrorKind::Unreachable,
             Self::Query(sqlx::Error::PoolTimedOut) => ErrorKind::Capacity,
             Self::Query(sqlx::Error::Database(error)) => {
                 sqlstate_kind(error.code().as_deref(), error.message())
@@ -44,6 +51,27 @@ impl Error {
         )
     }
 
+    pub fn sqlstate(&self) -> Option<String> {
+        match self {
+            Self::Query(sqlx::Error::Database(error)) => error.code().map(|code| code.into_owned()),
+            _ => None,
+        }
+    }
+
+    /// Tells an outage apart from a full pool when `pool` timed out handing over a
+    /// connection: SQLx reports both as `PoolTimedOut`, but only a full pool has
+    /// every one of its connections open.
+    pub fn explaining_pool_timeout(self, pool: &sqlx::PgPool) -> Self {
+        match self {
+            Self::Query(sqlx::Error::PoolTimedOut)
+                if pool.size() < pool.options().get_max_connections() =>
+            {
+                Self::PoolUnreachable
+            }
+            error => error,
+        }
+    }
+
     pub fn needs_fresh_connections(&self) -> bool {
         matches!(self.kind(), ErrorKind::ReadOnly | ErrorKind::StalePlan)
     }
@@ -54,7 +82,8 @@ impl Error {
 
     pub fn is_requeue_safe(&self) -> bool {
         match self {
-            Self::Query(sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed) => true,
+            Self::Query(sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed)
+            | Self::PoolUnreachable => true,
             Self::Query(sqlx::Error::Database(_)) => self.kind() != ErrorKind::DataRejected,
             _ => false,
         }
@@ -110,6 +139,50 @@ mod tests {
         assert_eq!(error.is_retryable(), retryable);
         assert_eq!(error.is_unavailable(), unavailable);
         assert_eq!(error.is_requeue_safe(), requeue_safe);
+    }
+
+    #[rstest]
+    #[case::refused_connect("postgres://litellm@127.0.0.1:1/litellm")]
+    #[tokio::test]
+    async fn a_pool_that_cannot_connect_is_unreachable_not_full(
+        #[case] url: &str,
+    ) -> Result<(), Box<dyn StdError>> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy(url)?;
+
+        let error = Error::from(pool.acquire().await.expect_err("nothing listens"));
+
+        assert!(matches!(error, Error::Query(sqlx::Error::PoolTimedOut)));
+        let explained = error.explaining_pool_timeout(&pool);
+        assert!(matches!(explained, Error::PoolUnreachable));
+        assert_eq!(explained.kind(), ErrorKind::Unreachable);
+        assert!(explained.is_requeue_safe());
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::every_connection_checked_out(1)]
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing to a Prisma-migrated PostgreSQL database"]
+    async fn a_full_pool_stays_a_capacity_error(
+        #[case] max_connections: u32,
+    ) -> Result<(), Box<dyn StdError>> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(max_connections)
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect(&std::env::var("DATABASE_URL")?)
+            .await?;
+        let _held = pool.acquire().await?;
+
+        let error = Error::from(pool.acquire().await.expect_err("the pool is full"));
+
+        assert_eq!(
+            error.explaining_pool_timeout(&pool).kind(),
+            ErrorKind::Capacity
+        );
+        Ok(())
     }
 
     #[rstest]

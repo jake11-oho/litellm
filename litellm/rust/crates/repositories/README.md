@@ -1,6 +1,6 @@
 # Repositories
 
-`litellm-repositories` holds every static query the Rust side runs against the Postgres schema Prisma migrates, and the repository that is the only way to run each one. `litellm-db` underneath it holds the connection side only: pools, endpoints, errors, `observe`, `within`, `Statements` and `health_check`. It has no queries.
+`litellm-repositories` holds every static query the Rust side runs against the Postgres schema Prisma migrates, reads and writes alike, and the repository that is the only way to run each one. `litellm-db` underneath it holds the connection side only: pools, endpoints, errors, `observe`, `within`, `Statements` and `health_check`. It has no queries.
 
 ## Layout
 
@@ -28,13 +28,20 @@ crates/repositories/
       memory.rs               # a repository's own memory tier gets its own file
       queries.rs
       queries/...
+    spend_log/
+      mod.rs
+      record.rs               # the record and ledger entry types the writer hands in
+      repository.rs           # one transaction for the rows and their ledger deliveries
+      queries.rs
+      queries/...
 ```
 
 ## Rules
 
 - Queries are private to their folder. Query functions and row types in `queries.rs` are `pub(super)`, so only that folder's `repository.rs` can call them, and not other repositories or other crates. Only a row type that a public repository method returns as is gets `pub` and a re-export from `mod.rs`, like `MappedClaim`
 - Every query runs inside `Database::run` with a `Call`. `run` reports the operation, applies the socket deadline, and recycles the pools and retries once on a stale prepared plan. A query called outside it skips all three. The `Call`'s `call_type` and `table` are the names the Prisma version of the same read reported, so DB dashboards keep one series across both
-- Take a connection with `Database::session(side)` and pass `session.executor()` to the query, so statements stay unnamed under PgBouncer. `Side::Read` prefers the replica. `Side::Writer` is for reads that must see the latest commit
+- Take a connection with `Database::session(side)` and pass `session.executor()` to the query, so statements stay unnamed under PgBouncer. `Side::Read` prefers the replica. `Side::Writer` is for writes and for reads that must see the latest commit
+- A write that must commit several queries together takes the session's connection with `Session::connection()`, opens the transaction on it, and passes `Session::names_statements()` to `Statements::new` for each query inside, as `spend_log` does. The whole transaction still runs inside one `Database::run`
 - `repository.rs` holds the policy around the queries: the side, the `Call`, short-circuits that skip the round trip (an empty input list), fallbacks between queries, memory tiers, and shaping rows into the types the caller takes. Shaping that SQL can do, such as `COALESCE` defaults and joins, goes in the SQL so the row comes out ready
 - Each query is one `.sql` file in its folder's `queries/`, read with `sqlx::query_file!`, `query_file_as!` or `query_file_scalar!`. The path is relative to the crate root, not the source file: `"src/key/queries/find_key_view.sql"`. The workspace `clippy.toml` bans the unchecked `sqlx::query` family outside test fixtures
 - Row types use `#[macro_rules_attribute::apply(crate::db_row)]` for the shared derives. Add `Serialize` by hand only when a row goes to the host unchanged, with `utc_timestamp` on its timestamp fields and `RawJson` for JSON columns the host parses itself

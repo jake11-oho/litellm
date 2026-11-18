@@ -25,6 +25,7 @@ mod routes;
 mod s3_log;
 mod secrets;
 mod spend_log_rows;
+mod spend_log_writer;
 mod tokenizer;
 
 #[pymodule(gil_used = true)]
@@ -136,6 +137,8 @@ mod _native {
     use crate::s3_log::NativeS3Log;
     #[pymodule_export]
     use crate::spend_log_rows::RustSpendLogRowBuilder;
+    #[pymodule_export]
+    use crate::spend_log_writer::{RustSpendLogWriteFailure, RustSpendLogWriter};
     #[cfg(feature = "huggingface")]
     #[pymodule_export]
     use crate::tokenizer::HuggingFaceEncoding;
@@ -259,6 +262,8 @@ mod tests {
                 "NativeModelCapacity",
                 "NativeModelCapacityState",
                 "NativeS3Log",
+                "RustSpendLogWriter",
+                "RustSpendLogWriteFailure",
                 "auth_allowed_routes_grant",
                 "auth_first_denied_route",
                 "auth_jwt_team_routes_grant",

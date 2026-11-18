@@ -69,6 +69,18 @@ impl Database {
         .await
     }
 
+    /// `error` with a writer pool timeout told apart: an outage when the pool still had room for a
+    /// connection, a full pool otherwise. SQLx reports both as `PoolTimedOut`.
+    pub(crate) fn explaining_writer_timeout(&self, error: litellm_db::Error) -> litellm_db::Error {
+        error.explaining_pool_timeout(self.pools.writer())
+    }
+
+    /// Drops every pooled connection opened before `error` when it calls for fresh ones, such as a
+    /// writer that became read-only after a failover. Returns whether it did.
+    pub(crate) fn recycle_after(&self, error: &litellm_db::Error) -> bool {
+        self.pools.recycle_after(error)
+    }
+
     /// A connection from `side` for the queries of one operation.
     pub(crate) async fn session(&self, side: Side) -> Result<Session, litellm_db::Error> {
         let connection = match side {
@@ -92,5 +104,16 @@ impl Session {
     /// An executor for the next query on this connection.
     pub(crate) fn executor(&mut self) -> Statements<&mut PgConnection> {
         Statements::new(&mut *self.connection, self.named)
+    }
+
+    /// The connection itself, for a repository that opens a transaction on it. Its queries pass
+    /// [`Session::names_statements`] to `Statements::new`.
+    pub(crate) fn connection(&mut self) -> &mut PgConnection {
+        &mut self.connection
+    }
+
+    /// Whether statements on this connection are prepared under a name.
+    pub(crate) fn names_statements(&self) -> bool {
+        self.named
     }
 }

@@ -1877,6 +1877,35 @@ class NativeDatabase:
     def health_check(self) -> Future[None]: ...
     def close(self) -> Future[None]: ...
 
+class RustSpendLogWriteFailure(Exception):
+    requeue: bool
+    kind: str
+
+@final
+class RustSpendLogWriter:
+    def __new__(
+        cls,
+        database: NativeDatabase,
+        *,
+        queue_max_bytes: int,
+        write_batch_max_bytes: int,
+        write_batch_max_rows: int,
+        queue_size_threshold: int,
+        poll_interval_seconds: float,
+        max_backoff_seconds: float,
+        max_depth: int,
+    ) -> RustSpendLogWriter: ...
+    def enqueue(self, rows: Sequence[str], at_head: bool, max_bytes: int) -> tuple[int, list[int]]: ...
+    def dequeue(self, limit: int) -> list[str]: ...
+    def __len__(self) -> int: ...
+    @property
+    def queued_bytes(self) -> int: ...
+    def write(
+        self,
+        rows: Sequence[str],
+        retention: tuple[Sequence[str] | None, Sequence[str] | None, Sequence[str]] | None = None,
+    ) -> Future[None]: ...
+
 @final
 class RustKeyRepository:
     def __new__(cls, database: NativeDatabase) -> RustKeyRepository: ...
@@ -2206,6 +2235,8 @@ __all__ = [
     "RustModelAccessGroupRepository",
     "RustPlan",
     "RustSpendLogRowBuilder",
+    "RustSpendLogWriteFailure",
+    "RustSpendLogWriter",
     "RustTeamGrant",
     "RustUpstreamError",
     "SpendRead",

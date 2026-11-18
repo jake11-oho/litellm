@@ -37,7 +37,7 @@ pub async fn observe<T>(
     let result = query.await;
     let outcome = match &result {
         Ok(_) => Some(Outcome::Succeeded),
-        Err(error @ Error::Query(_)) => Some(Outcome::Failed(
+        Err(error @ (Error::Query(_) | Error::PoolUnreachable)) => Some(Outcome::Failed(
             litellm_error::Report::new(error).to_string(),
         )),
         Err(_) => None,
