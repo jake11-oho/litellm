@@ -47,10 +47,10 @@ class AzureAIEmbedding(OpenAIChatCompletion):
 
             for idx in range(len(input)):
                 if idx in image_embeddings_idx:
-                    combined_responses.append(image_embedding_responses[image_idx])
+                    combined_responses.append({**image_embedding_responses[image_idx], "index": idx})
                     image_idx += 1
                 else:
-                    combined_responses.append(text_embedding_responses[text_idx])
+                    combined_responses.append({**text_embedding_responses[text_idx], "index": idx})
                     text_idx += 1
 
             model_response.data = combined_responses
@@ -189,7 +189,7 @@ class AzureAIEmbedding(OpenAIChatCompletion):
         if v1_embeddings_request["input"]:
             response: Final[EmbeddingResponse] = await super().embedding(
                 model=model,
-                input=input,
+                input=list(v1_embeddings_request["input"]),
                 timeout=timeout,
                 logging_obj=logging_obj,
                 model_response=model_response,
@@ -277,7 +277,7 @@ class AzureAIEmbedding(OpenAIChatCompletion):
         if v1_embeddings_request["input"]:
             response: Final[EmbeddingResponse] = super().embedding(
                 model,
-                input,
+                list(v1_embeddings_request["input"]),
                 timeout,
                 logging_obj,
                 model_response,
